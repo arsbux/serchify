@@ -1,12 +1,13 @@
-import chromium from '@sparticuz/chromium'
-import puppeteer from 'puppeteer-core'
-
+// Use dynamic imports to avoid loading chromium during build time
 export async function getBrowser() {
   const isProduction = process.env.NODE_ENV === 'production'
 
   if (isProduction) {
-    // Vercel/serverless environment
-    return await puppeteer.launch({
+    // Vercel/serverless environment - lazy load chromium
+    const chromium = (await import('@sparticuz/chromium')).default
+    const puppeteerCore = (await import('puppeteer-core')).default
+
+    return await puppeteerCore.launch({
       args: chromium.args,
       executablePath: await chromium.executablePath(),
       headless: true,
