@@ -1,19 +1,18 @@
-// Use dynamic imports to avoid loading chromium during build time
+// Browserless.io integration for serverless Chrome
 export async function getBrowser() {
   const isProduction = process.env.NODE_ENV === 'production'
 
   if (isProduction) {
-    // Vercel/serverless environment - lazy load chromium
-    const chromium = (await import('@sparticuz/chromium')).default
+    // Production: Use Browserless.io hosted Chrome
     const puppeteerCore = (await import('puppeteer-core')).default
 
-    return await puppeteerCore.launch({
-      args: chromium.args,
-      executablePath: await chromium.executablePath(),
-      headless: true,
+    const browserWSEndpoint = `wss://production-sfo.browserless.io?token=${process.env.BROWSERLESS_API_KEY}`
+
+    return await puppeteerCore.connect({
+      browserWSEndpoint
     })
   } else {
-    // Local development - use local Chrome
+    // Local development: Use local Chrome
     const puppeteerLocal = await import('puppeteer')
     return await puppeteerLocal.default.launch({
       headless: true,
