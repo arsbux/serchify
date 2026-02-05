@@ -186,7 +186,7 @@ Price: ${scrapedData.price}
 Brand: ${scrapedData.brand}
 Category: ${scrapedData.category}
 Headings: ${scrapedData.headings.join(', ')}
-Product Links: ${scrapedData.productLinks.map(p => p.text).join(', ')}
+Product Links: ${scrapedData.productLinks.map((p: any) => p.text).join(', ')}
 
 Analyze and determine:
 1. SPECIFIC product niche (e.g., "luxury golf clubs", "budget home furniture", "premium wireless earbuds")
