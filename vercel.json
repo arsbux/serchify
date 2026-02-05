@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "app/api/site/audit/route.ts": {
+      "memory": 1024,
+      "maxDuration": 60
+    },
+    "app/api/content/optimize-product/route.ts": {
+      "memory": 1024,
+      "maxDuration": 60
+    },
+    "app/api/competitor/analyze/route.ts": {
+      "memory": 1024,
+      "maxDuration": 60
+    }
+  }
+}
