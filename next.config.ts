@@ -4,7 +4,6 @@ const nextConfig: NextConfig = {
   serverExternalPackages: [
     'puppeteer',
     'puppeteer-core',
-    'google-trends-api',
     '@sparticuz/chromium'
   ]
 };
