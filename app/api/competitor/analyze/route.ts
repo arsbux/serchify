@@ -3,7 +3,6 @@ import { createClient } from '@/utils/supabase/server'
 import { GoogleGenerativeAI } from '@google/generative-ai'
 import axios from 'axios'
 import { analyzeMultipleKeywords } from '@/utils/keyword-metrics/analyzer'
-import { getBrowser } from '@/utils/puppeteer-serverless'
 
 export const maxDuration = 60
 
@@ -136,6 +135,7 @@ Return ONLY valid JSON (no markdown, no explanation):
           // Scrape the URL to find products sold on the site
           let browser
           try {
+            const { getBrowser } = await import('@/utils/puppeteer-serverless')
             browser = await getBrowser()
 
             const page = await browser.newPage()

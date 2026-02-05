@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { GoogleGenerativeAI } from '@google/generative-ai'
-import { getBrowser } from '@/utils/puppeteer-serverless'
 
 export const maxDuration = 60
 
@@ -77,6 +76,7 @@ export async function POST(request: NextRequest) {
         sendLog('Initializing browser', 'Starting headless Chrome instance')
 
         try {
+          const { getBrowser } = await import('@/utils/puppeteer-serverless')
           browser = await getBrowser()
         } catch (browserError: any) {
           sendError(`Failed to launch browser: ${browserError.message}. Please try again.`)
