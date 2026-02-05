@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import puppeteer from 'puppeteer'
 import { GoogleGenerativeAI } from '@google/generative-ai'
 
+export const runtime = 'nodejs'
 export const maxDuration = 60
 
 export async function POST(request: NextRequest) {

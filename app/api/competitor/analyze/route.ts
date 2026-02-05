@@ -5,6 +5,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai'
 import axios from 'axios'
 import { analyzeMultipleKeywords } from '@/utils/keyword-metrics/analyzer'
 
+export const runtime = 'nodejs'
 export const maxDuration = 60
 
 // AI-Powered Tool System (MCP-style architecture)
