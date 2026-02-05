@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server'
 import { createClient } from '@/utils/supabase/server'
-import puppeteer from 'puppeteer'
+import { getBrowser } from '@/utils/puppeteer-config'
 import { GoogleGenerativeAI } from '@google/generative-ai'
 import axios from 'axios'
 import { analyzeMultipleKeywords } from '@/utils/keyword-metrics/analyzer'
@@ -137,10 +137,7 @@ Return ONLY valid JSON (no markdown, no explanation):
           // Scrape the URL to find products sold on the site
           let browser
           try {
-            browser = await puppeteer.launch({
-              headless: true,
-              args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
-            })
+            browser = await getBrowser()
 
             const page = await browser.newPage()
             await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')

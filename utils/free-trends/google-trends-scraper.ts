@@ -1,4 +1,4 @@
-import puppeteer, { Browser, Page } from 'puppeteer'
+import puppeteer, { Browser, Page } from 'puppeteer-core'
 
 interface TrendDataPoint {
   date: string

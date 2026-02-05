@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/utils/supabase/server'
-import puppeteer from 'puppeteer'
+import { getBrowser } from '@/utils/puppeteer-config'
 import { GoogleGenerativeAI } from '@google/generative-ai'
 
 export const runtime = 'nodejs'
@@ -86,20 +86,7 @@ export async function POST(request: NextRequest) {
         sendLog('Initializing browser', 'Starting headless Chrome instance')
 
         try {
-          browser = await puppeteer.launch({
-            headless: true,
-            timeout: 60000,
-            args: [
-              '--no-sandbox',
-              '--disable-setuid-sandbox',
-              '--disable-dev-shm-usage',
-              '--disable-accelerated-2d-canvas',
-              '--disable-gpu',
-              '--single-process',
-              '--no-zygote',
-              '--disable-blink-features=AutomationControlled'
-            ]
-          })
+          browser = await getBrowser()
         } catch (browserError: any) {
           sendError(`Failed to launch browser: ${browserError.message}. Please try again.`)
           return
