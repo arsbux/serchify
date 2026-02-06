@@ -3,6 +3,7 @@ import { createClient } from '@/utils/supabase/server'
 import { GoogleGenerativeAI } from '@google/generative-ai'
 import axios from 'axios'
 import { analyzeMultipleKeywords } from '@/utils/keyword-metrics/analyzer'
+import { scrapePageData } from '@/utils/browserless-scraper'
 
 export const maxDuration = 60
 
@@ -133,46 +134,44 @@ Return ONLY valid JSON (no markdown, no explanation):
           }
 
           // Scrape the URL to find products sold on the site
-          let browser
           try {
-            const { getBrowser } = await import('@/utils/puppeteer-serverless')
-            browser = await getBrowser()
-
-            const page = await browser.newPage()
-            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
-
             sendLog('🔍 Scraping website...', normalizedUrl)
-            await page.goto(normalizedUrl, { waitUntil: 'networkidle2', timeout: 30000 })
 
-            // Extract comprehensive page data
-            const scrapedData = await page.evaluate(() => ({
-          title: document.title,
-          h1: (document.querySelector('h1') as HTMLElement)?.innerText,
-              metaDescription: document.querySelector('meta[name="description"]')?.getAttribute('content'),
-              // E-commerce specific selectors
-              productTitle: (document.querySelector('[itemprop="name"]') as HTMLElement)?.innerText ||
-                           (document.querySelector('.product-title') as HTMLElement)?.innerText ||
-                           (document.querySelector('.product-name') as HTMLElement)?.innerText,
-              price: document.querySelector('[itemprop="price"]')?.getAttribute('content') ||
-                     (document.querySelector('.price') as HTMLElement)?.innerText,
-              brand: (document.querySelector('[itemprop="brand"]') as HTMLElement)?.innerText,
-              description: (document.querySelector('[itemprop="description"]') as HTMLElement)?.innerText,
-              category: (document.querySelector('[itemtype*="BreadcrumbList"]') as HTMLElement)?.innerText,
-              // Get all product links
-              productLinks: Array.from(document.querySelectorAll('a[href*="/product"], a[href*="/item"], a.product-link'))
-                .slice(0, 10)
-                .map(a => ({
-                  text: (a as HTMLElement).innerText.trim(),
-                  href: (a as HTMLAnchorElement).href
-                })),
-              // Get all headings for context
-              headings: Array.from(document.querySelectorAll('h1, h2, h3'))
-                .slice(0, 20)
-                .map(h => (h as HTMLElement).innerText.trim())
-            }))
+            // Use Browserless scraper instead of Puppeteer
+            const pageData = await scrapePageData(normalizedUrl)
 
-            await browser.close()
             sendLog('✅ Website scraped successfully')
+
+            // Map browserless data to expected format
+            const scrapedData = {
+              title: pageData.title,
+              h1: pageData.headings?.h1?.[0]?.text || '',
+              metaDescription: pageData.metaDescription,
+              productTitle: pageData.headings?.h1?.[0]?.text || '',
+              price: '',
+              brand: '',
+              description: pageData.metaDescription || '',
+              category: '',
+              productLinks: [],
+              headings: [
+                ...(pageData.headings?.h1?.map((h: any) => h.text) || []),
+                ...(pageData.headings?.h2?.map((h: any) => h.text) || []),
+                ...(pageData.headings?.h3?.map((h: any) => h.text) || [])
+              ].slice(0, 20)
+            }
+
+            // Extract product info from structured data if available
+            if (pageData.structuredData && pageData.structuredData.length > 0) {
+              const productSchema = pageData.structuredData.find(
+                (schema: any) => schema['@type'] === 'Product'
+              )
+              if (productSchema) {
+                scrapedData.productTitle = productSchema.name || scrapedData.productTitle
+                scrapedData.brand = productSchema.brand?.name || productSchema.brand || ''
+                scrapedData.description = productSchema.description || scrapedData.description
+                scrapedData.price = productSchema.offers?.price || ''
+              }
+            }
 
             // Use AI to analyze scraped data and identify products with deep understanding
         const productAnalysisPrompt = `
@@ -231,25 +230,23 @@ Return ONLY valid JSON:
           } catch (error: any) {
             sendLog('⚠️ Scraping error, using fallback', error.message)
             // Fallback: use domain name for search
-        try {
-          const urlObj = new URL(normalizedUrl)
-          const domain = urlObj.hostname.replace('www.', '').split('.')[0]
-          productInfo = {
-            searchQuery: domain,
-            title: domain,
-            domain: normalizedUrl
+            try {
+              const urlObj = new URL(normalizedUrl)
+              const domain = urlObj.hostname.replace('www.', '').split('.')[0]
+              productInfo = {
+                searchQuery: domain,
+                title: domain,
+                domain: normalizedUrl
+              }
+            } catch {
+              // If URL parsing fails, just use the input as-is
+              productInfo = {
+                searchQuery: input,
+                title: input,
+                domain: input
+              }
+            }
           }
-        } catch {
-          // If URL parsing fails, just use the input as-is
-          productInfo = {
-            searchQuery: input,
-            title: input,
-            domain: input
-          }
-        }
-      } finally {
-        if (browser) await browser.close()
-      }
 
         } else {
           // Product name provided - use AI to enhance understanding

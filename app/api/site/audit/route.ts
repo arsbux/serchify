@@ -1,10 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { GoogleGenerativeAI } from '@google/generative-ai'
+import { scrapePageData } from '@/utils/browserless-scraper'
 
 export const maxDuration = 60
-
-// Helper function for delays (replaces deprecated waitForTimeout)
-const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
 function createSSEMessage(type: string, data: any): string {
   return `data: ${JSON.stringify({ type, data })}\n\n`
@@ -70,217 +68,46 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      let browser: any = null
-
       try {
-        sendLog('Initializing browser', 'Starting headless Chrome instance')
-
-        try {
-          const { getBrowser } = await import('@/utils/puppeteer-serverless')
-          browser = await getBrowser()
-        } catch (browserError: any) {
-          sendError(`Failed to launch browser: ${browserError.message}. Please try again.`)
-          return
-        }
-
-        const page = await browser.newPage()
-
-        // Set realistic viewport
-        await page.setViewport({ width: 1920, height: 1080 })
-
-        // Enhanced bot detection evasion
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
-        await page.setExtraHTTPHeaders({
-          'Accept-Language': 'en-US,en;q=0.9',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-          'Accept-Encoding': 'gzip, deflate, br',
-          'Connection': 'keep-alive',
-          'Upgrade-Insecure-Requests': '1'
-        })
-
-        // Remove automation indicators
-        await page.evaluateOnNewDocument(() => {
-          Object.defineProperty(navigator, 'webdriver', { get: () => false })
-          Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] })
-          Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] })
-        })
-
+        sendLog('Initializing browser', 'Using Browserless API')
         sendLog('Navigating to website', `Loading ${url}`)
 
         const startTime = Date.now()
 
+        // Use Browserless scraper instead of Puppeteer
+        let pageData: any
         try {
-          await page.goto(url, {
-            waitUntil: 'domcontentloaded',
-            timeout: 60000 // Increased timeout to 60 seconds
-          })
-
-          // Brief wait for JS to execute
-          await delay(2000)
+          pageData = await scrapePageData(url)
         } catch (error: any) {
           const errorMsg = error.message || 'Unknown error'
-          if (errorMsg.includes('net::ERR_NAME_NOT_RESOLVED')) {
+          if (errorMsg.includes('ENOTFOUND') || errorMsg.includes('not found')) {
             sendError(`Unable to resolve domain "${url}". Please check the URL is correct.`)
-          } else if (errorMsg.includes('net::ERR_CONNECTION_REFUSED')) {
+          } else if (errorMsg.includes('ECONNREFUSED')) {
             sendError(`Connection refused by "${url}". The server may be down.`)
-          } else if (errorMsg.includes('net::ERR_CONNECTION_TIMED_OUT')) {
+          } else if (errorMsg.includes('ETIMEDOUT') || errorMsg.includes('timeout')) {
             sendError(`Connection timed out for "${url}". The server is not responding.`)
-          } else if (errorMsg.includes('net::ERR_SSL')) {
+          } else if (errorMsg.includes('SSL') || errorMsg.includes('certificate')) {
             sendError(`SSL certificate error for "${url}". The site may have security issues.`)
-          } else if (errorMsg.includes('net::ERR_CERT')) {
-            sendError(`Certificate error for "${url}". The site's SSL certificate is invalid.`)
-          } else if (errorMsg.includes('TimeoutError') || errorMsg.includes('timeout')) {
-            sendError(`Page took too long to load (>60 seconds). "${url}" may be slow or blocking automated access.`)
-          } else if (errorMsg.includes('net::ERR_BLOCKED')) {
-            sendError(`Access blocked by "${url}". The site may be blocking automated requests.`)
           } else {
             sendError(`Failed to load page: ${errorMsg}`)
           }
-          await browser.close()
           return
         }
 
         const loadTime = Date.now() - startTime
 
         sendLog('Analyzing page structure', 'Extracting page content and metadata')
-
-        // Extract comprehensive page data with timeout protection
-        let pageData: any
-        try {
-          // Set a timeout for the page evaluation
-          const evaluatePromise = page.evaluate(() => {
-            const data: any = {
-            url: window.location.href,
-            title: document.title,
-            metaDescription: document.querySelector('meta[name="description"]')?.getAttribute('content') || null,
-            metaKeywords: document.querySelector('meta[name="keywords"]')?.getAttribute('content') || null,
-            viewport: document.querySelector('meta[name="viewport"]')?.getAttribute('content') || null,
-            charset: document.querySelector('meta[charset]')?.getAttribute('charset') ||
-                     document.characterSet || null,
-            language: document.documentElement.lang || null,
-
-            // Headings structure
-            headings: {
-              h1: Array.from(document.querySelectorAll('h1')).map(h => ({
-                text: h.innerText.trim(),
-                length: h.innerText.trim().length
-              })),
-              h2: Array.from(document.querySelectorAll('h2')).map(h => ({
-                text: h.innerText.trim(),
-                length: h.innerText.trim().length
-              })),
-              h3: Array.from(document.querySelectorAll('h3')).map(h => ({
-                text: h.innerText.trim(),
-                length: h.innerText.trim().length
-              }))
-            },
-
-            // Images analysis
-            images: Array.from(document.querySelectorAll('img')).map(img => ({
-              src: img.src,
-              alt: img.alt || null,
-              width: img.width,
-              height: img.height,
-              loading: img.loading || null
-            })),
-
-            // Links analysis
-            links: {
-              internal: Array.from(document.querySelectorAll('a')).filter(a => {
-                const href = a.getAttribute('href')
-                return href && !href.startsWith('http') && !href.startsWith('//')
-              }).length,
-              external: Array.from(document.querySelectorAll('a')).filter(a => {
-                const href = a.getAttribute('href')
-                return href && (href.startsWith('http') || href.startsWith('//'))
-              }).length,
-              broken: [] // Will be checked server-side
-            },
-
-            // Content analysis
-            content: {
-              wordCount: document.body.innerText.split(/\s+/).filter(Boolean).length,
-              paragraphs: document.querySelectorAll('p').length,
-              readabilityText: document.body.innerText.substring(0, 5000)
-            },
-
-            // Technical elements
-            technical: {
-              hasCanonical: !!document.querySelector('link[rel="canonical"]'),
-              canonicalUrl: document.querySelector('link[rel="canonical"]')?.getAttribute('href') || null,
-              hasRobotsMeta: !!document.querySelector('meta[name="robots"]'),
-              robotsContent: document.querySelector('meta[name="robots"]')?.getAttribute('content') || null,
-              hasStructuredData: document.querySelectorAll('script[type="application/ld+json"]').length > 0,
-              structuredDataCount: document.querySelectorAll('script[type="application/ld+json"]').length,
-              hasFavicon: !!document.querySelector('link[rel*="icon"]'),
-              hasOpenGraph: !!document.querySelector('meta[property^="og:"]'),
-              hasTwitterCard: !!document.querySelector('meta[name^="twitter:"]')
-            },
-
-            // Performance indicators
-            performance: {
-              domContentCount: document.querySelectorAll('*').length,
-              scriptCount: document.querySelectorAll('script').length,
-              stylesheetCount: document.querySelectorAll('link[rel="stylesheet"]').length,
-              fontCount: document.querySelectorAll('link[rel="preload"][as="font"]').length
-            },
-
-            // Mobile optimization
-            mobile: {
-              hasViewport: !!document.querySelector('meta[name="viewport"]'),
-              viewportContent: document.querySelector('meta[name="viewport"]')?.getAttribute('content') || null,
-              smallTextElements: Array.from(document.querySelectorAll('*')).filter(el => {
-                const style = window.getComputedStyle(el)
-                const fontSize = parseFloat(style.fontSize)
-                return fontSize > 0 && fontSize < 12
-              }).length,
-              touchTargets: document.querySelectorAll('button, a, input, select, textarea').length
-            }
-          }
-
-            return data
-          })
-
-          // Add timeout protection - 30 seconds max for page evaluation
-          const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Page analysis timed out')), 30000)
-          )
-
-          pageData = await Promise.race([evaluatePromise, timeoutPromise])
-        } catch (evalError: any) {
-          sendError(`Failed to analyze page structure: ${evalError.message || 'The page may have complex scripts blocking analysis.'}`)
-          await browser.close()
-          return
-        }
-
         sendLog('Checking page speed', 'Measuring performance metrics')
 
-        // Get performance metrics with error handling
-        let performanceMetrics: any = {}
-        try {
-          performanceMetrics = await page.metrics()
-        } catch (metricsError: any) {
-          sendLog('Performance metrics unavailable', 'Continuing with basic analysis')
+        // Performance metrics (basic timing data)
+        const performanceMetrics: any = {
+          loadTime
         }
 
         sendLog('Analyzing structured data', 'Extracting schema markup')
 
-        // Extract structured data with error handling
-        let structuredData: any[] = []
-        try {
-          structuredData = await page.evaluate(() => {
-            const scripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]'))
-            return scripts.map(script => {
-              try {
-                return JSON.parse(script.innerHTML)
-              } catch {
-                return null
-              }
-            }).filter(Boolean)
-          })
-        } catch (schemaError: any) {
-          sendLog('Structured data extraction failed', 'Continuing without schema data')
-        }
+        // Extract structured data from pageData
+        const structuredData: any[] = pageData.structuredData || []
 
         sendLog('Discovering products', 'Using intelligent multi-method product discovery')
 
@@ -381,65 +208,57 @@ export async function POST(request: NextRequest) {
 
         let jsonLdProducts: any[] = []
         try {
-          jsonLdProducts = await page.evaluate(() => {
-            const products: any[] = []
-            const scripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]'))
+          // Use structured data from browserless scraper
+          const products: any[] = []
 
-            for (const script of scripts) {
-              try {
-                const data = JSON.parse(script.innerHTML)
+          for (const data of structuredData) {
+            // Handle single product
+            if (data['@type'] === 'Product') {
+              products.push({
+                name: data.name,
+                description: data.description,
+                image: Array.isArray(data.image) ? data.image[0] : data.image,
+                price: data.offers?.price || data.offers?.[0]?.price,
+                currency: data.offers?.priceCurrency || data.offers?.[0]?.priceCurrency,
+                url: data.offers?.url || data.url || pageData.url,
+                sku: data.sku,
+                brand: data.brand?.name || data.brand
+              })
+            }
 
-                // Handle single product
-                if (data['@type'] === 'Product') {
+            // Handle product lists (ItemList)
+            if (data['@type'] === 'ItemList' && data.itemListElement) {
+              for (const item of data.itemListElement) {
+                if (item['@type'] === 'Product' || item.item?.['@type'] === 'Product') {
+                  const prod = item['@type'] === 'Product' ? item : item.item
                   products.push({
-                    name: data.name,
-                    description: data.description,
-                    image: Array.isArray(data.image) ? data.image[0] : data.image,
-                    price: data.offers?.price || data.offers?.[0]?.price,
-                    currency: data.offers?.priceCurrency || data.offers?.[0]?.priceCurrency,
-                    url: data.offers?.url || data.url || window.location.href,
-                    sku: data.sku,
-                    brand: data.brand?.name || data.brand
+                    name: prod.name,
+                    description: prod.description,
+                    image: Array.isArray(prod.image) ? prod.image[0] : prod.image,
+                    price: prod.offers?.price,
+                    url: prod.url || prod.offers?.url
                   })
                 }
-
-                // Handle product lists (ItemList)
-                if (data['@type'] === 'ItemList' && data.itemListElement) {
-                  for (const item of data.itemListElement) {
-                    if (item['@type'] === 'Product' || item.item?.['@type'] === 'Product') {
-                      const prod = item['@type'] === 'Product' ? item : item.item
-                      products.push({
-                        name: prod.name,
-                        description: prod.description,
-                        image: Array.isArray(prod.image) ? prod.image[0] : prod.image,
-                        price: prod.offers?.price,
-                        url: prod.url || prod.offers?.url
-                      })
-                    }
-                  }
-                }
-
-                // Handle nested @graph structure
-                if (data['@graph']) {
-                  for (const item of data['@graph']) {
-                    if (item['@type'] === 'Product') {
-                      products.push({
-                        name: item.name,
-                        description: item.description,
-                        image: Array.isArray(item.image) ? item.image[0] : item.image,
-                        price: item.offers?.price,
-                        url: item.url || window.location.href
-                      })
-                    }
-                  }
-                }
-              } catch (e) {
-                // Invalid JSON - skip
               }
             }
 
-            return products
-          })
+            // Handle nested @graph structure
+            if (data['@graph']) {
+              for (const item of data['@graph']) {
+                if (item['@type'] === 'Product') {
+                  products.push({
+                    name: item.name,
+                    description: item.description,
+                    image: Array.isArray(item.image) ? item.image[0] : item.image,
+                    price: item.offers?.price,
+                    url: item.url || pageData.url
+                  })
+                }
+              }
+            }
+          }
+
+          jsonLdProducts = products
 
           if (jsonLdProducts.length > 0) {
             sendLog('JSON-LD found', `Found ${jsonLdProducts.length} products in structured data`)
@@ -448,177 +267,10 @@ export async function POST(request: NextRequest) {
           sendLog('JSON-LD extraction failed', 'Continuing with other methods')
         }
 
-        // ============== METHOD 4: AI-POWERED HTML ANALYSIS ==============
-        let aiExtractedProducts: any[] = []
-
-        // Only use AI method if other methods found few products
-        const totalSoFar = shopifyProducts.length + sitemapProducts.length + jsonLdProducts.length
-        if (totalSoFar < 5) {
-          sendLog('Method 4: AI HTML Analysis', 'Using AI to analyze page structure')
-
-          try {
-            // Get a sample of the page HTML for AI analysis
-            const pageHtmlSample = await page.evaluate(() => {
-              // Get main content area, excluding headers/footers
-              const main = document.querySelector('main, [role="main"], #main, .main-content, #content') || document.body
-
-              // Get all potential product containers
-              const containers = main.querySelectorAll('a[href]')
-              const productCandidates: string[] = []
-
-              containers.forEach((el: any) => {
-                const href = el.getAttribute('href') || ''
-                const text = el.innerText?.trim() || ''
-                const img = el.querySelector('img')
-                const imgSrc = img?.src || img?.getAttribute('data-src') || ''
-                const imgAlt = img?.alt || ''
-
-                // Get price-like elements nearby
-                const parent = el.parentElement?.parentElement
-                const priceEl = parent?.querySelector('[class*="price"], [class*="Price"], .price, [data-price]')
-                const priceText = priceEl?.innerText?.trim() || ''
-
-                if (text.length > 2 && text.length < 200) {
-                  productCandidates.push(`LINK: ${href} | TEXT: ${text} | IMG: ${imgAlt || imgSrc.split('/').pop()} | PRICE: ${priceText}`)
-                }
-              })
-
-              return productCandidates.slice(0, 50).join('\n')
-            })
-
-            if (pageHtmlSample.length > 100) {
-              try {
-                const aiPrompt = `Analyze these HTML elements from an e-commerce website and extract ONLY the actual products.
-
-PAGE ELEMENTS:
-${pageHtmlSample}
-
-TASK: Identify which elements are REAL PRODUCTS (items for sale with names and potentially prices).
-Exclude: navigation links, category links, blog posts, about pages, promotional banners.
-
-Return ONLY valid JSON array of products you find:
-[
-  {"name": "Product Name", "url": "product url", "price": "price if found"}
-]
-
-If no clear products are found, return: []`
-
-                const aiResult = await aiModel.generateContent(aiPrompt)
-                const aiResponse = aiResult.response.text().trim()
-                const jsonMatch = aiResponse.match(/\[[\s\S]*\]/)
-
-                if (jsonMatch) {
-                  aiExtractedProducts = JSON.parse(jsonMatch[0])
-                  if (aiExtractedProducts.length > 0) {
-                    sendLog('AI extraction success', `AI identified ${aiExtractedProducts.length} products`)
-                  }
-                }
-              } catch (aiError: any) {
-                sendLog('AI extraction failed', aiError.message || 'Could not analyze page with AI')
-              }
-            }
-          } catch (htmlError: any) {
-            sendLog('HTML analysis failed', 'Could not extract page elements')
-          }
-        }
-
-        // ============== METHOD 5: CRAWL COLLECTION/CATEGORY PAGES ==============
-        let crawledProducts: any[] = []
-        const combinedProducts = [...shopifyProducts, ...sitemapProducts, ...jsonLdProducts, ...aiExtractedProducts]
-
-        if (combinedProducts.length < 10) {
-          sendLog('Method 5: Crawling collection pages', 'Looking for product listing pages')
-
-          let uniqueCollectionLinks: string[] = []
-          try {
-            // Extract all links and find collection/category pages
-            const allLinks = await page.evaluate((baseOrigin: string) => {
-              return Array.from(document.querySelectorAll('a[href]'))
-                .map(a => (a as HTMLAnchorElement).href)
-                .filter(href => {
-                  try {
-                    const linkUrl = new URL(href)
-                    return linkUrl.origin === baseOrigin &&
-                      href.match(/\/(collection|collections|category|categories|shop|products|catalog|department|dept|c\/|browse|all)/i)
-                  } catch {
-                    return false
-                  }
-                })
-                .slice(0, 10)
-            }, origin)
-
-            // Remove duplicates
-            uniqueCollectionLinks = Array.from(new Set(allLinks as string[]))
-          } catch (linkError: any) {
-            sendLog('Collection link extraction failed', 'Continuing without collection crawling')
-          }
-
-          if (uniqueCollectionLinks.length > 0) {
-            sendLog('Found collection pages', `Checking ${uniqueCollectionLinks.length} collection/category pages`)
-
-            // Crawl first 3 collection pages
-            for (const collectionUrl of uniqueCollectionLinks.slice(0, 3)) {
-              let collectionPage: any = null
-              try {
-                collectionPage = await browser.newPage()
-                await collectionPage.goto(collectionUrl, { waitUntil: 'domcontentloaded', timeout: 15000 })
-                await delay(500)
-
-                // Extract products from collection page using AI
-                const collectionHtml = await collectionPage.evaluate(() => {
-                  const items: string[] = []
-                  document.querySelectorAll('a[href]').forEach((el: any) => {
-                    const href = el.getAttribute('href') || ''
-                    const text = el.innerText?.trim() || ''
-                    const img = el.querySelector('img')
-                    const imgAlt = img?.alt || ''
-                    const parent = el.closest('[class*="product"], [class*="item"], [class*="card"], article, li')
-                    const priceEl = parent?.querySelector('[class*="price"], [class*="Price"]')
-                    const price = priceEl?.innerText?.trim() || ''
-
-                    if (text.length > 3 && text.length < 150 && href.length > 1) {
-                      items.push(`URL:${href}|NAME:${text || imgAlt}|PRICE:${price}`)
-                    }
-                  })
-                  return items.slice(0, 30).join('\n')
-                })
-
-                if (collectionHtml.length > 50) {
-                  const aiPrompt = `Extract products from this e-commerce collection page:
-
-${collectionHtml}
-
-Return JSON array of products:
-[{"name": "Product Name", "url": "product url", "price": "price"}]
-
-Only include actual products for sale. Return [] if none found.`
-
-                  const result = await aiModel.generateContent(aiPrompt)
-                  const text = result.response.text()
-                  const match = text.match(/\[[\s\S]*\]/)
-                  if (match) {
-                    const pageProducts = JSON.parse(match[0])
-                    if (pageProducts.length > 0) {
-                      // Fix relative URLs
-                      pageProducts.forEach((p: any) => {
-                        if (p.url && !p.url.startsWith('http')) {
-                          p.url = origin + (p.url.startsWith('/') ? '' : '/') + p.url
-                        }
-                      })
-                      crawledProducts.push(...pageProducts)
-                      sendLog('Products found', `${pageProducts.length} products from ${new URL(collectionUrl).pathname}`)
-                    }
-                  }
-                }
-
-                await collectionPage.close()
-              } catch (e: any) {
-                sendLog('Collection page failed', `Could not load ${new URL(collectionUrl).pathname}: ${e.message?.substring(0, 50) || 'timeout'}`)
-                try { await collectionPage?.close() } catch {}
-              }
-            }
-          }
-        }
+        // Skip METHOD 4 and METHOD 5 - they require additional page navigation
+        // which is complex with Browserless API
+        const aiExtractedProducts: any[] = []
+        const crawledProducts: any[] = []
 
         // ============== COMBINE AND DEDUPLICATE ALL PRODUCTS ==============
         sendLog('Product discovery summary', `Shopify: ${shopifyProducts.length}, Sitemap: ${sitemapProducts.length}, JSON-LD: ${jsonLdProducts.length}, AI: ${aiExtractedProducts.length}, Crawled: ${crawledProducts.length}`)
@@ -723,8 +375,6 @@ DO NOT use emojis. Keep it professional but friendly.`
           report = `# SEO Audit Report\n\nWe were unable to generate a detailed AI report. Here's a summary:\n\n- **URL**: ${url}\n- **Load Time**: ${loadTime}ms\n- **Products Found**: ${products.length}\n- **Title Length**: ${pageData.title?.length || 0} characters\n- **Meta Description**: ${pageData.metaDescription?.length || 0} characters\n\nPlease try again later for a full AI-powered analysis.`
         }
 
-        await browser.close()
-
         sendLog('Analysis complete', 'Generating report')
 
         // Extract a simple score from the report
@@ -816,9 +466,6 @@ Return ONLY valid JSON:
 
       } catch (error: any) {
         console.error('Site audit error:', error)
-        if (browser) {
-          try { await browser.close() } catch {}
-        }
 
         // Provide specific error messages based on error type
         const errorMsg = error.message || ''

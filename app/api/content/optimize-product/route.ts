@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { GoogleGenerativeAI } from '@google/generative-ai'
+import { scrapePageData } from '@/utils/browserless-scraper'
 
 export const maxDuration = 60
 
@@ -76,163 +77,73 @@ export async function POST(request: NextRequest) {
 
       try {
         // Step 1: Initialize browser
-        sendLog('Initializing browser', 'Starting headless Chrome instance')
-        const { getBrowser } = await import('@/utils/puppeteer-serverless')
-        const browser = await getBrowser()
-
-        const page = await browser.newPage()
-        await page.setViewport({ width: 1920, height: 1080 })
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+        sendLog('Initializing browser', 'Using Browserless API')
 
         // Step 2: Navigate to product page
         sendLog('Navigating to product page', `Loading ${url}`)
         const startTime = Date.now()
-        await page.goto(url, {
-          waitUntil: 'domcontentloaded',
-          timeout: 45000,
-        })
+
+        // Use Browserless scraper instead of Puppeteer
+        const pageData = await scrapePageData(url)
+
         const loadTime = Date.now() - startTime
         sendLog('Page loaded', `Loaded in ${loadTime}ms`)
 
         // Step 3: Extract product data
         sendLog('Extracting product data', 'Scanning page for product information')
-        const productData = await page.evaluate(() => {
-          const data: any = {
-            images: [],
-            title: '',
-            description: '',
-            price: '',
-            metaTitle: '',
-            metaDescription: '',
-            metaKeywords: '',
-            headings: {
-              h1: [],
-              h2: [],
-              h3: [],
-            },
-            textContent: '',
-            schemaMarkup: [],
-            openGraph: {},
-            productInfo: {},
-            imageCount: 0,
-            wordCount: 0,
+
+        // Map browserless data to product data format
+        const productData: any = {
+          images: pageData.images || [],
+          title: pageData.headings?.h1?.[0]?.text || pageData.title || '',
+          description: '',
+          price: '',
+          metaTitle: pageData.title || '',
+          metaDescription: pageData.metaDescription || '',
+          metaKeywords: pageData.metaKeywords || '',
+          headings: {
+            h1: pageData.headings?.h1?.map((h: any) => h.text) || [],
+            h2: pageData.headings?.h2?.map((h: any) => h.text) || [],
+            h3: pageData.headings?.h3?.map((h: any) => h.text) || [],
+          },
+          textContent: pageData.content?.readabilityText || '',
+          schemaMarkup: pageData.structuredData || [],
+          openGraph: {},
+          productInfo: {},
+          imageCount: pageData.images?.length || 0,
+          wordCount: pageData.content?.wordCount || 0,
+        }
+
+        // Extract Open Graph tags (would need to be added to browserless-scraper if needed)
+        // For now, using basic meta tags
+        productData.openGraph = {
+          title: pageData.title,
+          description: pageData.metaDescription
+        }
+
+        // Extract product-specific info from schema
+        const productSchema = productData.schemaMarkup.find(
+          (schema: any) => schema['@type'] === 'Product' || schema['@type']?.includes('Product')
+        )
+        if (productSchema) {
+          productData.productInfo = {
+            name: productSchema.name || '',
+            description: productSchema.description || '',
+            image: productSchema.image || [],
+            brand: productSchema.brand?.name || '',
+            sku: productSchema.sku || '',
+            offers: productSchema.offers || {},
+            aggregateRating: productSchema.aggregateRating || {},
           }
 
-          // Extract all product images
-          const images = Array.from(document.querySelectorAll('img'))
-          data.images = images
-            .map((img) => ({
-              src: img.src,
-              alt: img.alt || '',
-              width: img.naturalWidth,
-              height: img.naturalHeight,
-            }))
-            .filter((img) => img.src && !img.src.includes('data:image'))
-            .slice(0, 20)
-
-          data.imageCount = data.images.length
-
-          // Extract product title
-          data.title =
-            document.querySelector('h1')?.textContent?.trim() ||
-            document.querySelector('[itemprop="name"]')?.textContent?.trim() ||
-            document.querySelector('.product-title')?.textContent?.trim() ||
-            document.querySelector('.product-name')?.textContent?.trim() ||
-            ''
-
-          // Extract product description
-          const descriptionSelectors = [
-            '[itemprop="description"]',
-            '.product-description',
-            '.product-desc',
-            '#product-description',
-            '.description',
-          ]
-          for (const selector of descriptionSelectors) {
-            const elem = document.querySelector(selector)
-            if (elem?.textContent) {
-              data.description = elem.textContent.trim()
-              break
-            }
+          // Use schema data for missing fields
+          if (!productData.description && productSchema.description) {
+            productData.description = productSchema.description
           }
-
-          // Extract price
-          const priceSelectors = [
-            '[itemprop="price"]',
-            '.price',
-            '.product-price',
-            '[class*="price"]',
-          ]
-          for (const selector of priceSelectors) {
-            const elem = document.querySelector(selector)
-            if (elem?.textContent) {
-              data.price = elem.textContent.trim()
-              break
-            }
+          if (!productData.price && productSchema.offers?.price) {
+            productData.price = productSchema.offers.price
           }
-
-          // Extract meta tags
-          const metaTitleTag = document.querySelector('meta[property="og:title"]') ||
-                               document.querySelector('title')
-          data.metaTitle = metaTitleTag?.textContent?.trim() ||
-                           (metaTitleTag as HTMLMetaElement)?.content || ''
-
-          const metaDescTag = document.querySelector('meta[name="description"]') ||
-                              document.querySelector('meta[property="og:description"]')
-          data.metaDescription = (metaDescTag as HTMLMetaElement)?.content || ''
-
-          const metaKeywordsTag = document.querySelector('meta[name="keywords"]')
-          data.metaKeywords = (metaKeywordsTag as HTMLMetaElement)?.content || ''
-
-          // Extract headings
-          data.headings.h1 = Array.from(document.querySelectorAll('h1')).map(h => h.textContent?.trim() || '')
-          data.headings.h2 = Array.from(document.querySelectorAll('h2')).map(h => h.textContent?.trim() || '')
-          data.headings.h3 = Array.from(document.querySelectorAll('h3')).map(h => h.textContent?.trim() || '')
-
-          // Extract all text content
-          const bodyText = document.body.innerText || ''
-          data.textContent = bodyText.slice(0, 5000)
-          data.wordCount = bodyText.split(/\s+/).filter(word => word.length > 0).length
-
-          // Extract schema markup
-          const schemaScripts = document.querySelectorAll('script[type="application/ld+json"]')
-          schemaScripts.forEach((script) => {
-            try {
-              const schemaData = JSON.parse(script.textContent || '')
-              data.schemaMarkup.push(schemaData)
-            } catch {
-              // Invalid JSON, skip
-            }
-          })
-
-          // Extract Open Graph tags
-          const ogTags = document.querySelectorAll('meta[property^="og:"]')
-          ogTags.forEach((tag) => {
-            const property = tag.getAttribute('property')?.replace('og:', '') || ''
-            const content = (tag as HTMLMetaElement).content || ''
-            if (property && content) {
-              data.openGraph[property] = content
-            }
-          })
-
-          // Extract product-specific info from schema
-          const productSchema = data.schemaMarkup.find(
-            (schema: any) => schema['@type'] === 'Product' || schema['@type']?.includes('Product')
-          )
-          if (productSchema) {
-            data.productInfo = {
-              name: productSchema.name || '',
-              description: productSchema.description || '',
-              image: productSchema.image || [],
-              brand: productSchema.brand?.name || '',
-              sku: productSchema.sku || '',
-              offers: productSchema.offers || {},
-              aggregateRating: productSchema.aggregateRating || {},
-            }
-          }
-
-          return data
-        })
+        }
 
         sendLog('Product data extracted', `Found ${productData.imageCount} images, ${productData.wordCount} words`)
 
@@ -244,8 +155,6 @@ export async function POST(request: NextRequest) {
 
         // Step 6: Analyzing images
         sendLog('Analyzing images', `Checking ${productData.imageCount} product images for optimization`)
-
-        await browser.close()
 
         // Step 7: AI Analysis
         sendLog('Preparing AI analysis', 'Sending data to AI for comprehensive SEO recommendations')
